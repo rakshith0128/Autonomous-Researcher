@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/hooks/userunstream.ts","./src/lib/types.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/agentfeed.tsx","./src/components/livegraph.tsx","./src/components/plotlyfigure.tsx","./src/components/resultspanel.tsx","./src/components/vitals.tsx","./src/hooks/userunstate.ts","./src/hooks/userunstream.ts","./src/lib/api.ts","./src/lib/types.ts","./src/pages/gallery.tsx","./src/pages/landing.tsx","./src/pages/runconsole.tsx","./src/types/plotly.d.ts"],"version":"5.9.3"}

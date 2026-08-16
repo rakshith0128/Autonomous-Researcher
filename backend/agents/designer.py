@@ -55,7 +55,17 @@ correlation.
 - State H0 and H1 so that H0 could actually be rejected.
 - State your prediction BEFORE seeing results. You will be judged on whether the outcome \
 matches it, so an honest prediction is worth more than a safe one.
-- A column that is constant, or nearly all one value, is useless as a predictor."""
+- A column that is constant, or nearly all one value, is useless as a predictor.
+
+CRITICAL — do not answer a different question.
+
+In `addresses_question`, name which column corresponds to which part of the research \
+question. If the question asks about X and no column measures X, you must set \
+`answers_question` to false rather than substituting a column that happens to be available.
+
+Reporting "this question cannot be answered with this data" is a correct and useful outcome; \
+the system will go and find a different question. Quietly measuring something else produces a \
+paper whose title contradicts its own research question, which is worse than no paper."""
 
 PROMPT = """Research question:
 {question}
@@ -64,6 +74,8 @@ What this question requires measuring: {measurable}
 
 Available dataset ({rows} rows). These are the ONLY columns that exist:
 {columns}
+
+{evidence}
 
 {history}
 
@@ -96,6 +108,33 @@ class ExperimentDesigner(BaseAgent):
 
         spec = await self._design(question, dataset, state, cycle=cycle)
 
+        if not spec.answers_question:
+            # The honest outcome. Reporting that the question is unanswerable
+            # sends the run back for a new one; substituting an available
+            # column would produce a paper whose title contradicts its own
+            # stated research question.
+            self.say(
+                "No available column measures what this question asks about. Reporting "
+                "upward rather than answering a different question.",
+                level=Level.WARN,
+                cycle=cycle,
+            )
+            self.ctx.bus.reroute(
+                target="question",
+                reason=f"question unanswerable with these columns: {spec.addresses_question}"[:200],
+                cycle=cycle,
+                source=AgentName.DESIGNER,
+            )
+            return {
+                "reroute_to": "question",
+                "reroute_reason": (
+                    "the assembled dataset contains no column measuring what the question "
+                    f"asks about ({spec.addresses_question or 'no mapping given'})"
+                ),
+                "warnings": ["question unanswerable with the gathered columns"],
+            }
+
+        self.say(f"Columns chosen: {spec.addresses_question}", cycle=cycle)
         self.say(
             f"Hypothesis: {spec.hypothesis.alternative}",
             level=Level.SUCCESS,
@@ -132,12 +171,28 @@ class ExperimentDesigner(BaseAgent):
         columns = describe_columns(dataset)
         history = self._history_text(state)
 
+        # Retrieved passages from the papers themselves. This is what stops the
+        # Designer picking columns purely on their names -- the literature says
+        # which relationships are already known, which are contested, and which
+        # confounds a reviewer will immediately raise.
+        passages = self.recall(
+            f"{question.text} {question.proposal.expected_measurable}", k=4, max_chars=3000
+        )
+        evidence = (
+            f"Relevant passages retrieved from the acquired papers:\n\n{passages}"
+            if passages
+            else ""
+        )
+        if passages:
+            self.say("Retrieved supporting passages from the indexed papers.", cycle=cycle)
+
         spec = await self._propose(
             PROMPT.format(
                 question=question.text,
                 measurable=question.proposal.expected_measurable,
                 rows=dataset.n_rows,
                 columns=columns,
+                evidence=evidence,
                 history=history,
             )
         )
@@ -159,6 +214,10 @@ class ExperimentDesigner(BaseAgent):
                     kind=spec.kind.value, params=spec.params, error=error, columns=columns
                 )
             )
+            # A repair round may legitimately conclude the question cannot be
+            # answered; preserve that verdict rather than validating it away.
+            if not spec.answers_question:
+                return spec
         return spec
 
     async def _propose(self, prompt: str) -> ExperimentSpec:

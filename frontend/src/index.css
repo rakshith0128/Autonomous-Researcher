@@ -58,6 +58,147 @@ pre,
   background: transparent;
 }
 
+/* Typography for the rendered paper. Written by hand rather than pulled from a
+   plugin: the paper is the deliverable, and its tables, code spans and
+   blockquotes need to read well against the dark panel background. */
+.prose-paper {
+  color: #cbd5e1;
+  line-height: 1.7;
+  font-size: 15px;
+}
+.prose-paper h1 {
+  font-size: 1.6rem;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin: 0 0 1rem;
+  line-height: 1.3;
+}
+.prose-paper h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 2rem 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--color-edge);
+}
+.prose-paper h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 1.5rem 0 0.5rem;
+}
+.prose-paper p {
+  margin: 0.85rem 0;
+}
+.prose-paper ul,
+.prose-paper ol {
+  margin: 0.85rem 0;
+  padding-left: 1.4rem;
+  list-style: revert;
+}
+.prose-paper li {
+  margin: 0.35rem 0;
+}
+.prose-paper blockquote {
+  border-left: 3px solid var(--color-edge);
+  padding: 0.5rem 0 0.5rem 1rem;
+  margin: 1rem 0;
+  color: #94a3b8;
+  background: var(--color-panel-2);
+  border-radius: 0 6px 6px 0;
+}
+.prose-paper a {
+  color: #38bdf8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+.prose-paper code {
+  background: var(--color-panel-2);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+  color: #a5b4fc;
+}
+.prose-paper strong {
+  color: #f1f5f9;
+  font-weight: 600;
+}
+/* Tables carry the results and the provenance ledger, so they must stay
+   readable — and scroll independently rather than widening the page. */
+.prose-paper table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+}
+.prose-paper th {
+  text-align: left;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--color-edge);
+  color: #94a3b8;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.prose-paper td {
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid rgba(35, 43, 69, 0.5);
+  vertical-align: top;
+}
+.prose-paper hr {
+  border: 0;
+  border-top: 1px solid var(--color-edge);
+  margin: 1.5rem 0;
+}
+
+/* React Flow ships light-themed controls: a near-white button face with black
+   icon fills. Against the dark panel they render as a floating white block.
+   The library's own `className` prop only reaches the container, so the button
+   and icon rules have to be overridden directly. */
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--color-panel-2);
+  border-bottom: 1px solid var(--color-edge);
+  width: 24px;
+  height: 24px;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.react-flow__controls-button:hover {
+  background: var(--color-edge);
+}
+.react-flow__controls-button svg {
+  fill: #94a3b8;
+  max-width: 11px;
+  max-height: 11px;
+}
+.react-flow__controls-button:hover svg {
+  fill: #e2e8f0;
+}
+.react-flow__controls-button:focus-visible {
+  outline: 2px solid var(--color-agent-scout);
+  outline-offset: -2px;
+}
+
+/* The attribution link inherits a light colour for the same reason. */
+.react-flow__attribution {
+  background: transparent;
+}
+.react-flow__attribution a {
+  color: #475569;
+}
+
 @keyframes pulse-ring {
   0% {
     box-shadow: 0 0 0 0 currentColor;

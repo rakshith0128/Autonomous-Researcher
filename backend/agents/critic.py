@@ -51,6 +51,11 @@ SYSTEM = """You are a hostile peer reviewer. Your job is to find what is wrong w
 analysis, not to be encouraging.
 
 Attack, in order of value:
+- QUESTION DRIFT: does the experiment actually test the stated research question, or a \
+different one that happened to be measurable? Check the analysed columns against what the \
+question asks about. If the question asks about X and the experiment measured Y, that is a \
+BLOCKING objection and you must reroute to "question" -- a paper answering something nobody \
+asked is worse than a null result, because it looks like a finding.
 - Confounding: what third variable explains this relationship?
 - Construct validity: does the measured quantity actually represent what is claimed?
 - Selection bias: how was the sample assembled, and what does that exclude?
@@ -75,6 +80,8 @@ PROMPT = """Research question: {question}
 
 Hypothesis: {hypothesis}
 Prediction registered before execution: {prediction}
+Columns analysed, and how the designer claims they map to the question:
+{addresses}
 
 Results (already computed -- treat these numbers as given):
 {results}
@@ -137,6 +144,20 @@ class Critic(BaseAgent):
         self._enforce(critique, flags)
         self._report(critique, cycle=cycle)
 
+        # Publish the reroute as its own event.
+        #
+        # Without this the graph's red edges never animate and the vitals panel
+        # reads "Reroutes 0" even after five rejected cycles -- the single most
+        # legible evidence that this is a state machine rather than a chain,
+        # invisible in the one place a reviewer is looking.
+        if critique.verdict != Verdict.ACCEPT and critique.reroute_to != RerouteTarget.NONE:
+            self.ctx.bus.reroute(
+                target=critique.reroute_to.value,
+                reason=(critique.summary or "; ".join(flags.as_reasons()))[:200],
+                cycle=cycle,
+                source=AgentName.CRITIC,
+            )
+
         return {
             "critiques": [critique],
             "cycle": cycle,
@@ -178,6 +199,9 @@ class Critic(BaseAgent):
             question=question.text if question else "(unknown)",
             hypothesis=result.spec.hypothesis.alternative,
             prediction=result.spec.hypothesis.prediction,
+            addresses=(
+                f"{result.spec.params} — {result.spec.addresses_question or 'no mapping stated'}"
+            ),
             results=_render_results(result),
             sources=len(bundle.documents),
             modalities=len(bundle.modalities),

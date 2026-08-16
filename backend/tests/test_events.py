@@ -126,7 +126,7 @@ class TestSubscription:
 
 
 class TestConvenienceHelpers:
-    def test_reroute_is_attributed_to_the_critic_and_warns(self):
+    def test_reroute_defaults_to_the_critic_and_warns(self):
         bus = EventBus("r")
         event = bus.reroute("experiment", "p=0.41 exceeds alpha", cycle=2)
         assert event.type == EventType.REROUTE
@@ -134,6 +134,37 @@ class TestConvenienceHelpers:
         assert event.level == Level.WARN
         assert event.payload["target"] == "experiment"
         assert event.cycle == 2
+
+    def test_reroute_records_its_actual_source(self):
+        """Three agents reroute, not just the Critic. Attributing an
+        Alchemist reroute to the Critic draws the wrong red edge."""
+        bus = EventBus("r")
+        event = bus.reroute(
+            "question", "only 2 modalities", cycle=1, source=AgentName.ALCHEMIST
+        )
+        assert event.agent == AgentName.ALCHEMIST
+        assert event.payload["source"] == "data_alchemist"
+
+    def test_every_reroute_source_maps_to_a_frontend_node(self):
+        """Regression guard for a silent failure.
+
+        Reroute events name their source by *agent* while the graph draws
+        edges between *node ids*. If the frontend's AGENT_TO_NODE map is
+        missing an entry, the edge never matches, the red path never lights
+        up, and the vitals panel reads 'Reroutes 0' after five rejected
+        cycles -- with no error anywhere.
+        """
+        from pathlib import Path
+
+        types_ts = (
+            Path(__file__).resolve().parents[2] / "frontend" / "src" / "lib" / "types.ts"
+        ).read_text(encoding="utf-8")
+        mapping = types_ts.split("AGENT_TO_NODE")[1].split("};")[0]
+
+        for agent in (AgentName.CRITIC, AgentName.ALCHEMIST, AgentName.DESIGNER):
+            assert f"{agent.value}:" in mapping, (
+                f"{agent.value} can reroute but has no node mapping in the frontend"
+            )
 
     def test_artifact_carries_kind_and_data(self):
         bus = EventBus("r")

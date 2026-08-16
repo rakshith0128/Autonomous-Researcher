@@ -23,6 +23,7 @@ from typing import Any
 from ..config import Settings
 from ..llm import LLMRouter
 from ..llm.budget import BudgetExhausted
+from ..memory.vector import VectorMemory
 from ..runtime.bus import EventBus
 from ..schemas import AgentName, ArtifactKind, Level
 from ..tools.http import Fetcher
@@ -56,6 +57,9 @@ class AgentContext:
     router: LLMRouter
     fetcher: Fetcher
     bus: EventBus
+    #: Run-scoped vector store. Optional: when unavailable the agents fall back
+    #: to titles and abstracts, which is worse but not fatal.
+    memory: VectorMemory | None = None
 
 
 class BaseAgent(ABC):
@@ -165,3 +169,17 @@ class BaseAgent(ABC):
     @property
     def fetcher(self) -> Fetcher:
         return self.ctx.fetcher
+
+    @property
+    def memory(self) -> VectorMemory | None:
+        return self.ctx.memory
+
+    def recall(self, query: str, *, k: int = 5, max_chars: int = 4000) -> str:
+        """Retrieve evidence relevant to `query` from the acquired documents.
+
+        Returns an empty string when vector memory is unavailable, so callers
+        can interpolate it unconditionally and simply get a thinner prompt.
+        """
+        if self.ctx.memory is None or not self.ctx.memory.available:
+            return ""
+        return self.ctx.memory.context_for(query, k=k, max_chars=max_chars)

@@ -20,8 +20,9 @@ import logging
 import sys
 
 from .config import get_settings
+from .memory.ledger import Ledger
 from .runtime.runner import ResearchRunner
-from .schemas import EventType, Level
+from .schemas import EventType, Level, RunStatus
 
 # Terminal colours per severity. Disabled automatically when piped.
 _COLOURS = {
@@ -99,12 +100,34 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     runner = ResearchRunner(settings=settings)
-    runner.bus._on_persist = lambda e: _print_event(e, verbose=args.verbose)
+
+    # Persist to the same ledger the web UI reads, so a headless run appears in
+    # the gallery like any other. This is how showcase runs are seeded: a
+    # reviewer arriving after the daily free-tier quota is spent still finds
+    # finished papers rather than a 429.
+    ledger = Ledger(settings.db_path)
+    await ledger.init()
+    await ledger.create_run(runner.run_id, client_key="cli")
+
+    captured: list = []
+
+    def on_event(event) -> None:  # noqa: ANN001
+        captured.append(event)
+        _print_event(event, verbose=args.verbose)
+
+    runner.bus._on_persist = on_event
 
     print(f"\nRun {runner.run_id} — max {settings.max_cycles} cycles, "
           f"providers: {[p.name for p in settings.configured_providers()]}\n")
 
     state = await runner.run()
+
+    await ledger.append_events(runner.run_id, captured)
+    await ledger.finish_run(
+        runner.run_id,
+        status=RunStatus.COMPLETED if state.get("paper") else RunStatus.FAILED,
+        state=state,
+    )
 
     out_dir = settings.artifacts_dir / runner.run_id
     out_dir.mkdir(parents=True, exist_ok=True)

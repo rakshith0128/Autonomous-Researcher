@@ -11,7 +11,8 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { AGENTS, type AgentName } from "@/lib/types";
+import { AGENT_TO_NODE, AGENTS, type AgentName } from "@/lib/types";
+import type { Topology } from "@/lib/api";
 import type { RunState } from "@/hooks/useRunState";
 
 /**
@@ -28,19 +29,9 @@ import type { RunState } from "@/hooks/useRunState";
 
 interface Props {
   state: RunState;
-  topology: { nodes: TopologyNode[]; edges: TopologyEdge[] } | null;
-}
-
-interface TopologyNode {
-  id: string;
-  agent: AgentName;
-  label: string;
-}
-
-interface TopologyEdge {
-  from: string;
-  to: string;
-  kind: "flow" | "reroute";
+  /** Fetched from the backend so the drawing cannot drift from the graph that
+   *  actually executes. */
+  topology: Topology | null;
 }
 
 /** Laid out in two rows: discovery along the top, analysis along the bottom. */
@@ -94,9 +85,16 @@ export function LiveGraph({ state, topology }: Props) {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   // Reroutes taken this run, so a traversed reroute edge stays highlighted
-  // rather than flashing once and vanishing.
+  // rather than flashing once and vanishing. Sources arrive as agent names and
+  // have to be translated to node ids before they will match an edge.
   const takenReroutes = useMemo(
-    () => new Set(state.reroutes.map((r) => `critic->${r.to}`)),
+    () =>
+      new Set(
+        state.reroutes.map((r) => {
+          const from = AGENT_TO_NODE[r.from as AgentName] ?? r.from;
+          return `${from}->${r.to}`;
+        }),
+      ),
     [state.reroutes],
   );
 

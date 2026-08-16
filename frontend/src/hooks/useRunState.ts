@@ -90,7 +90,9 @@ export function useRunState(events: RunEvent[]): RunState {
 
         case "reroute":
           state.reroutes.push({
-            from: "critic",
+            // The Critic is the usual source, but the Alchemist and Designer
+            // reroute too — assuming "critic" would draw the wrong red edge.
+            from: String(event.payload.source ?? event.agent ?? "critic"),
             to: String(event.payload.target ?? ""),
             reason: String(event.payload.reason ?? event.message),
             cycle: event.cycle,

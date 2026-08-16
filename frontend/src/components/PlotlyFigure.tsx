@@ -20,7 +20,17 @@ export function PlotlyFigure({ figureJson, title, caption }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    let plotly: typeof import("plotly.js-dist-min") | null = null;
+    // Only the two calls this component makes, so the local type does not have
+    // to mirror the whole module shape.
+    let plotly: {
+      newPlot: (
+        root: HTMLElement,
+        data: unknown[],
+        layout?: Record<string, unknown>,
+        config?: Record<string, unknown>,
+      ) => Promise<HTMLElement>;
+      purge: (root: HTMLElement) => void;
+    } | null = null;
 
     const element = container.current;
     if (!element) return;
@@ -29,14 +39,14 @@ export function PlotlyFigure({ figureJson, title, caption }: Props) {
       try {
         const module = await import("plotly.js-dist-min");
         if (cancelled) return;
-        plotly = module.default ?? (module as never);
+        plotly = module.default ?? module;
 
         const figure = JSON.parse(figureJson) as {
           data: unknown[];
           layout: Record<string, unknown>;
         };
 
-        await plotly.newPlot(element, figure.data as never, figure.layout as never, {
+        await plotly.newPlot(element, figure.data, figure.layout, {
           displaylogo: false,
           responsive: true,
           // Trimmed to the controls a reader of a chart actually wants;

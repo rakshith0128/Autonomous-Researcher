@@ -128,15 +128,44 @@ class TestDataShortfall:
         assert route_after_data(state) == WRITER
 
 
+class TestQuestionDrift:
+    def test_unanswerable_question_reroutes_instead_of_substituting(self):
+        """The defect this prevents, observed in a real run: the question asked
+        about GitHub implementations, no such column existed, and the Designer
+        silently measured abstract word count instead -- producing a paper
+        whose title contradicted its own stated research question."""
+        from backend.graph.build import route_after_design
+
+        state = initial_state("r", max_cycles=5)
+        state["reroute_to"] = RerouteTarget.QUESTION.value
+        assert route_after_design(state) == QUESTION
+
+    def test_answerable_question_proceeds_to_execution(self):
+        from backend.graph.build import route_after_design
+
+        assert route_after_design(initial_state("r", max_cycles=5)) == EXECUTE
+
+    def test_drift_at_the_cycle_cap_still_writes_up(self):
+        from backend.graph.build import route_after_design
+
+        state = initial_state("r", max_cycles=2)
+        state["cycle"] = 2
+        state["reroute_to"] = RerouteTarget.QUESTION.value
+        assert route_after_design(state) == WRITER
+
+
 class TestHaltPropagation:
     def test_a_halted_run_routes_straight_to_the_writer(self):
         """A fatal failure must still produce a document explaining itself."""
+        from backend.graph.build import route_after_design
+
         state = initial_state("r", max_cycles=5)
         state["finished"] = True
         state["failure_reason"] = "scout could not reach any source"
         assert route_after_critic(state) == WRITER
         assert route_after_data(state) == WRITER
         assert route_after_execute(state) == WRITER
+        assert route_after_design(state) == WRITER
 
 
 class TestCompiledGraph:

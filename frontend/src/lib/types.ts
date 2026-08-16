@@ -111,6 +111,27 @@ export const AGENTS: Record<AgentName, { label: string; color: string; short: st
   paper_writer: { label: "Paper Writer", color: "var(--color-agent-writer)", short: "WRT" },
 };
 
+/**
+ * Agent name to graph node id. Mirrors NODE_TO_AGENT in backend/graph/build.py.
+ *
+ * Reroute events identify their source by agent, while the graph draws edges
+ * between node ids, and the two vocabularies differ (`data_alchemist` vs
+ * `data`). Without this the reroute edge silently fails to match and never
+ * lights up.
+ */
+export const AGENT_TO_NODE: Record<AgentName, string> = {
+  supervisor: "scout",
+  domain_scout: "scout",
+  peer_review_panel: "panel",
+  question_generator: "question",
+  data_alchemist: "data",
+  experiment_designer: "design",
+  executor: "execute",
+  uncertainty_quantifier: "uncertainty",
+  critic: "critic",
+  paper_writer: "writer",
+};
+
 export const LEVEL_STYLES: Record<Level, string> = {
   debug: "text-slate-500",
   info: "text-slate-300",

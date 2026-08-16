@@ -3,6 +3,10 @@ import type { RunEvent } from "@/lib/types";
 
 type StreamState = "idle" | "connecting" | "streaming" | "done" | "error";
 
+/** Batching window. Short enough to feel live, long enough to coalesce the
+ *  bursts a busy phase produces. */
+const FLUSH_INTERVAL_MS = 90;
+
 interface Options {
   /** Replay from this sequence number. Used when reconnecting mid-run. */
   fromSeq?: number;
@@ -31,7 +35,7 @@ export function useRunStream(runId: string | null, options: Options = {}) {
   const sourceRef = useRef<EventSource | null>(null);
   const lastSeqRef = useRef<number>(fromSeq);
   const bufferRef = useRef<RunEvent[]>([]);
-  const frameRef = useRef<number | null>(null);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onEventRef = useRef(onEvent);
 
   // Keep the callback current without making it an effect dependency, which
@@ -41,16 +45,26 @@ export function useRunStream(runId: string | null, options: Options = {}) {
   }, [onEvent]);
 
   const flush = useCallback(() => {
-    frameRef.current = null;
+    flushTimerRef.current = null;
     if (bufferRef.current.length === 0) return;
     const batch = bufferRef.current;
     bufferRef.current = [];
     setEvents((prev) => [...prev, ...batch]);
   }, []);
 
+  /**
+   * Coalesce bursts with a timer, deliberately NOT requestAnimationFrame.
+   *
+   * rAF does not fire while the tab is backgrounded or otherwise not
+   * compositing, so buffered events would sit unflushed indefinitely and the
+   * feed would appear frozen — on a run that takes minutes, switching tabs is
+   * not an edge case, it is the normal thing to do. Timers are throttled in
+   * background tabs but they still fire, so the feed stays current and simply
+   * updates less smoothly.
+   */
   const schedule = useCallback(() => {
-    if (frameRef.current !== null) return;
-    frameRef.current = requestAnimationFrame(flush);
+    if (flushTimerRef.current !== null) return;
+    flushTimerRef.current = setTimeout(flush, FLUSH_INTERVAL_MS);
   }, [flush]);
 
   useEffect(() => {
@@ -104,12 +118,13 @@ export function useRunStream(runId: string | null, options: Options = {}) {
     return () => {
       source.close();
       sourceRef.current = null;
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      if (flushTimerRef.current !== null) clearTimeout(flushTimerRef.current);
     };
   }, [runId, schedule, flush]);
 
   const reset = useCallback(() => {
     sourceRef.current?.close();
+    if (flushTimerRef.current !== null) clearTimeout(flushTimerRef.current);
     bufferRef.current = [];
     lastSeqRef.current = 0;
     setEvents([]);

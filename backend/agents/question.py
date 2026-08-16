@@ -72,6 +72,13 @@ class _Rating(BaseModel):
 class _RatingBatch(BaseModel):
     ratings: list[_Rating] = Field(min_length=1)
 
+
+class _SameQuestion(BaseModel):
+    """Adjudication for a pair vector similarity cannot separate."""
+
+    same: bool = Field(description="True only if these are the same question reworded")
+    reasoning: str = ""
+
 SYSTEM = """You design research questions for an autonomous analysis system.
 
 A good question here has four properties:
@@ -170,6 +177,11 @@ class QuestionGenerator(BaseAgent):
                 for q in candidates
                 if q.disqualified
             )
+            # Record rejections in vector memory so the *next* regeneration
+            # round, and later cycles, can detect rewordings of them.
+            if self.memory is not None and self.memory.available:
+                for rejected in (q for q in candidates if q.disqualified):
+                    self.memory.remember_rejection(rejected.text, rejected.disqualified_reason)
             questions.extend(candidates)
 
             if viable:
@@ -287,6 +299,34 @@ class QuestionGenerator(BaseAgent):
             question.disqualified_reason = "requires only one data source, so it is a lookup"
             return
 
+        # Semantic negative memory: retrieval for recall, a model for precision.
+        #
+        # Listing rejected questions in the prompt catches literal repeats only;
+        # by the third cycle the generator returns the same question reworded.
+        # But similarity alone cannot separate a rewording from a genuinely new
+        # question either -- measured, a different question scored 0.812 while a
+        # true duplicate scored 0.810. So the vector store narrows the field and
+        # a cheap model call decides the ambiguous cases.
+        if self.memory is not None and self.memory.available:
+            prior, ambiguous = self.memory.similar_rejection(question.text)
+            if prior is not None:
+                duplicate = True
+                if ambiguous:
+                    duplicate = await self._is_same_question(question.text, prior.text)
+                if duplicate:
+                    question.disqualified = True
+                    question.disqualified_reason = (
+                        f"already asked and rejected this run "
+                        f"(similarity {prior.similarity:.2f}): {prior.text[:110]}"
+                    )
+                    self.say(
+                        f"Rejected as a reworded repeat (similarity {prior.similarity:.2f}): "
+                        f"{question.text[:80]}…",
+                        level=Level.WARN,
+                        cycle=cycle,
+                    )
+                    return
+
         search = SearchClient(self.fetcher)
         found, url, snippet = await search.is_directly_answerable(question.text)
         if not found:
@@ -314,6 +354,45 @@ class QuestionGenerator(BaseAgent):
                 level=Level.WARN,
                 cycle=cycle,
             )
+
+    async def _is_same_question(self, candidate: str, prior: str) -> bool:
+        """Adjudicate a topically-close pair that similarity cannot separate.
+
+        Fails *open* -- an unreachable judge lets the question through. Wrongly
+        discarding a valid question costs a whole regeneration round and the run
+        never learns why; wrongly keeping a duplicate merely repeats work the
+        Critic will reject again.
+        """
+        try:
+            verdict = await self.router.structured(
+                Role.FAST,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You decide whether two research questions ask the same thing. "
+                            "Same topic is NOT the same question: two questions about "
+                            "citation counts that relate them to different variables are "
+                            "different questions."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Question A: {prior}\n\nQuestion B: {candidate}\n\n"
+                            "Would answering one also answer the other? Set same=true only "
+                            "if they are the same question worded differently."
+                        ),
+                    },
+                ],
+                _SameQuestion,
+                temperature=0.0,
+                max_tokens=300,
+            )
+            return verdict.same
+        except Exception as exc:  # noqa: BLE001
+            log.warning("duplicate adjudication unavailable: %s", exc)
+            return False
 
     async def _judge(self, question: str, url: str, snippet: str) -> _Verdict:
         try:

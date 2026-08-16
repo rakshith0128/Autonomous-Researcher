@@ -118,6 +118,27 @@ class DataAlchemist(BaseAgent):
 
         bundle = DataBundle(question_id=question.id)
 
+        # Reuse what a previous visit already fetched.
+        #
+        # The Critic can reroute here several times per run, and re-acquiring
+        # from scratch each time means re-downloading ~30MB of PDFs, re-running
+        # OCR, and re-embedding the same passages. Measured across one run:
+        # three visits spent 128s, 132s and 459s -- 719 seconds of a 900s
+        # budget re-learning what was already in hand, which is why that run
+        # timed out before it could finish a single cycle.
+        #
+        # Documents are keyed by content hash, so this is safe: an identical
+        # fetch would produce an identical document. A changed question still
+        # gets fresh sources on top of the reusable ones.
+        previous: DataBundle | None = state.get("data_bundle")
+        if previous is not None and previous.documents:
+            bundle.documents.extend(previous.documents)
+            self.say(
+                f"Reusing {len(previous.documents)} source(s) already fetched this run; "
+                "only gathering what is missing.",
+                cycle=cycle,
+            )
+
         self.say(f"Acquiring data for: {question.text[:100]}…", cycle=cycle)
 
         # Sources are gathered concurrently: they are different hosts, and the
@@ -135,6 +156,7 @@ class DataAlchemist(BaseAgent):
         repos = repos if isinstance(repos, list) else []
 
         self._promote_tables(bundle, cycle=cycle)
+        _deduplicate(bundle)
 
         modalities = bundle.modalities
         self.say(
@@ -157,12 +179,30 @@ class DataAlchemist(BaseAgent):
                 level=Level.ERROR,
                 cycle=cycle,
             )
+            self.ctx.bus.reroute(
+                target="question",
+                reason=f"insufficient data: {shortfall}",
+                cycle=cycle,
+                source=AgentName.ALCHEMIST,
+            )
             return {
                 "data_bundle": bundle,
                 "reroute_to": "question",
                 "reroute_reason": f"insufficient data for this question: {shortfall}",
                 "warnings": [f"data acquisition shortfall: {shortfall}"],
             }
+
+        # Index the full texts before anything downstream needs them. Four PDFs
+        # is roughly a quarter of a million characters -- far past any prompt --
+        # so without this the documents are fetched, hashed, cited, and then
+        # never actually read by the agents that reason about them.
+        if self.memory is not None and self.memory.available:
+            chunks = await asyncio.to_thread(self.memory.index_documents, bundle.documents)
+            self.say(
+                f"Indexed {chunks} passages from {len(bundle.documents)} sources for retrieval.",
+                cycle=cycle,
+            )
+            self.tool("vector.index", ok=chunks > 0, detail=f"{chunks} chunks", cycle=cycle)
 
         dataset = await self._build_dataset(works, papers, repos, bundle, cycle=cycle)
         bundle.dataset = dataset
@@ -227,6 +267,10 @@ class DataAlchemist(BaseAgent):
         self.say(f"OpenAlex: {len(works)} scholarly records.", cycle=cycle)
         return works
 
+    @staticmethod
+    def _already_have(bundle: DataBundle, url: str) -> bool:
+        return any(d.url == url for d in bundle.documents)
+
     async def _arxiv_pdfs(self, term: str, bundle: DataBundle, *, cycle: int) -> list:
         """Full texts, tables, and -- from one paper -- OCR'd figures.
 
@@ -243,6 +287,10 @@ class DataAlchemist(BaseAgent):
             return []
 
         for index, paper in enumerate(papers[:MAX_PDFS]):
+            # Each PDF is megabytes to download and seconds to parse, plus OCR
+            # on the first. Re-fetching one we already hold is pure cost.
+            if self._already_have(bundle, paper.abs_url or paper.pdf_url):
+                continue
             try:
                 data = await client.fetch_pdf(paper)
             except Exception as exc:  # noqa: BLE001 - one dead PDF is not a failure
@@ -710,6 +758,24 @@ def _fuzzy_lookup(key: str, index: dict[str, Any]) -> Any:
         if score > best_score:
             best, best_score = value, score
     return best if best_score >= TITLE_MATCH_THRESHOLD else None
+
+
+def _deduplicate(bundle: DataBundle) -> None:
+    """Collapse documents fetched more than once, keeping the first.
+
+    Reusing a previous visit's documents means a source can be added twice if a
+    fetch path does not check. Duplicates would inflate the source count, skew
+    the confidence score, and produce a reference list that repeats itself.
+    """
+    seen: set[str] = set()
+    unique = []
+    for document in bundle.documents:
+        key = document.provenance.sha256 or document.url
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(document)
+    bundle.documents = unique
 
 
 def _drop_constant_columns(
