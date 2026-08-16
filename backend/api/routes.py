@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -60,15 +61,47 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _build_identity() -> dict[str, str]:
+    """Which commit is actually running.
+
+    Without this there is no way to distinguish a deployed fix from an
+    undeployed one except by inferring it from behaviour. That cost real
+    debugging time: a corrected rate-limit policy appeared not to work, and the
+    true cause was simply that the platform had not finished rebuilding.
+
+    Railway, Render and Vercel each inject the commit SHA under their own name.
+    """
+    sha = (
+        os.getenv("GIT_COMMIT_SHA")
+        or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+        or os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("VERCEL_GIT_COMMIT_SHA")
+        or ""
+    )
+    return {
+        "commit": sha[:8] or "unknown",
+        "branch": os.getenv("RAILWAY_GIT_BRANCH") or os.getenv("RENDER_GIT_BRANCH") or "",
+    }
+
+
 @router.get("/health")
 async def health() -> dict[str, Any]:
     settings = get_settings()
     return {
         "status": "ok",
+        "build": _build_identity(),
         "providers_configured": [p.name for p in settings.configured_providers()],
         "search_configured": bool(settings.tavily_api_key),
         "active_runs": len(_active),
         "max_concurrent": settings.max_concurrent_runs,
+        # Surfaced so a deployed instance can be checked against the fix that
+        # was supposed to be in it, without reading the source.
+        "limits": {
+            "max_cycles": settings.max_cycles,
+            "run_timeout_seconds": settings.run_timeout_seconds,
+            "vector_memory": settings.enable_vector_memory,
+            "ocr": settings.enable_ocr,
+        },
     }
 
 
