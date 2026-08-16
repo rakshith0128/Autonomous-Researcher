@@ -7,6 +7,110 @@ why it is built that way, the failures that shaped it, and how to verify any of 
 
 ---
 
+# Tech Stack
+
+Every technology choice here follows from a single rule: **the model proposes, Python decides.**
+LangGraph enforces control flow so no agent can loop by choosing to; Pydantic enforces contracts
+so malformed work cannot propagate; scipy computes the statistics so no number is ever generated;
+and fastembed runs locally so retrieval has no quota to exhaust.
+
+---
+
+## Backend — Python 3.11
+
+| Layer | Technology | Why this choice |
+|---|---|---|
+| **Orchestration** | LangGraph 0.2 + langchain-core 0.3 | A state machine with conditional edges and real cycles. The graph *is* the evidence that this is not a prompt chain — the Critic names where work is wrong and routing sends it there. |
+| **API** | FastAPI 0.115 + Uvicorn 0.32 | Async throughout, with native SSE support for the live run console. |
+| **Streaming** | sse-starlette 2.1 | Server-Sent Events survive free-tier reverse proxies better than WebSockets and reconnect trivially. |
+| **Contracts** | Pydantic 2.9 + pydantic-settings 2.6 | Every agent takes a validated model in and returns one out. Malformed output fails validation before it can reach the next agent. |
+| **LLM access** | openai 1.54 SDK | All four supported providers expose OpenAI-compatible endpoints, so provider support is a base URL and a model id — not an adapter per vendor. |
+| **Retries** | tenacity 9.0 | Backoff policy for transient failures. |
+
+## Data & storage
+
+| Purpose | Technology | Notes |
+|---|---|---|
+| **Run ledger** | SQLite via aiosqlite 0.20 | Every event is persisted, which yields refresh-safe replay, the run gallery, and the trace view from a single write path. WAL mode keeps reads working during a live run. |
+| **Vector memory** | ChromaDB 0.5 (ephemeral client) | Retrieval over acquired documents, plus semantic negative memory for rejected questions. Run-scoped, so runs never contaminate each other. |
+| **Embeddings** | fastembed 0.4 — `BAAI/bge-small-en-v1.5` | Quantised ONNX running **locally**: no embedding API, no key, no quota. On a system where every other budget is a scarce free tier, that matters. |
+
+## Data acquisition
+
+**HTTP layer** — httpx 0.27 (async). One shared client with per-host circuit breakers, a retry
+policy that distinguishes transient from permanent failures, response size guards, and politeness
+throttling.
+
+**Sources** — arXiv API · OpenAlex · GitHub REST · Tavily · Hacker News Algolia. All free, none
+requiring a card.
+
+**Extraction**
+
+| Library | Role |
+|---|---|
+| PyMuPDF 1.24 | PDF text layer |
+| pdfplumber 0.11 | Table recovery from PDFs |
+| rapidocr-onnxruntime 1.3 + Pillow 11 | Figure OCR — pip-only, so there is no Tesseract system binary to fight in Docker |
+| trafilatura 1.12 + beautifulsoup4 4.12 | Article extraction with boilerplate removal |
+| feedparser 6.0 | arXiv Atom feeds |
+
+## Analysis
+
+| Library | Used for |
+|---|---|
+| **scipy 1.14** | Pearson/Spearman correlation, Welch t-test, Mann-Whitney U, Mann-Kendall trend, Shapiro-Wilk |
+| **statsmodels 0.14** | OLS with HC3 robust standard errors, Benjamini-Hochberg FDR correction |
+| **scikit-learn 1.5** | KMeans + silhouette, cross-validated classification against a stratified baseline |
+| **pandas 2.2 / numpy 1.26** | Dataset assembly, bootstrap resampling |
+| **plotly 5.24** | Figures built server-side, serialised to JSON, rendered client-side |
+
+Every statistic in the final paper is computed here. No model output is trusted with a number.
+
+## Frontend — React 18 + TypeScript 5.6
+
+| Purpose | Technology |
+|---|---|
+| **Build** | Vite 6 |
+| **Styling** | Tailwind CSS 4 (Vite plugin, CSS-first config) |
+| **Live graph** | `@xyflow/react` 12 — nodes pulse as agents run, reroute edges light red |
+| **Charts** | plotly.js-dist-min 2.35 + react-plotly.js — lazy-loaded, since it is ~3MB and unneeded until results exist |
+| **Paper rendering** | react-markdown 9 + remark-gfm 4 |
+| **Routing** | react-router-dom 6 |
+| **Transitions** | framer-motion 11 |
+| **Streaming** | Native `EventSource` |
+
+## Infrastructure
+
+**Container** — a multi-stage Dockerfile: Node 20 Alpine builds the React bundle, then
+`python:3.11-slim` serves the API and the built assets from a single port. Runs as uid 1000 and
+reads `$PORT` with a 7860 fallback, so one image runs unmodified on Railway, Render, or Hugging
+Face Spaces.
+
+**Hosting** — Railway for the backend (Docker, auto-deploy from GitHub); Vercel for the frontend
+CDN in a split deployment; `render.yaml` is included as a documented fallback.
+
+**LLM providers** — Groq (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`,
+`llama-3.1-8b-instant`) and Google Gemini (`gemini-3.5-flash`, `gemini-3.5-flash-lite`,
+`gemini-3.1-flash-lite`). Six models across two families, budgeted **per model** because free-tier
+quotas differ by more than an order of magnitude between siblings.
+
+## Testing & tooling
+
+**pytest 8.3** with **pytest-asyncio** and **respx** for HTTP mocking — **280 tests, running fully
+offline.** No network, no LLM calls, no credentials, so CI needs nothing configured. **ruff 0.7**
+for linting.
+
+---
+
+## Deviations from the suggested stack, with justification
+
+| Suggested | Used | Reason |
+|---|---|---|
+| Railway / Render / Fly.io | **Railway** | Of the three, only Railway and Render still have a genuinely free path. Fly.io removed its free allowances; Railway's trial needs no card and covers the required 7-day window at full CPU. |
+| Hugging Face Spaces | **Railway** | Docker Spaces now require a paid PRO plan; only Static Spaces remain free, and those cannot run a Python backend. |
+| Playwright (headless browser) | **Tiered fetcher** | Direct request → trafilatura extraction → reader proxy handles the pages this system encounters at a fraction of Playwright's ~500MB image cost. The tiers *are* the fallback Playwright would have provided. |
+| Per-provider SDKs | **One OpenAI SDK** | Groq, Gemini, Cerebras and OpenRouter all expose OpenAI-compatible endpoints, so adding a provider is a base URL and a model name rather than a new adapter. |
+
 ## Contents
 
 1. [Problem and approach](#1-problem-and-approach)
