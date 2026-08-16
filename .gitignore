@@ -22,6 +22,9 @@ runs/
 node_modules/
 frontend/dist/
 npm-debug.log*
+# TypeScript incremental build cache. Machine-specific and regenerated on every
+# build, so tracking it produces merge conflicts in a file nobody ever reads.
+*.tsbuildinfo
 
 # editors / os
 .vscode/

@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -60,6 +61,25 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+_settings = get_settings()
+if _settings.allowed_origins:
+    # Split deployment: the frontend is hosted elsewhere (Vercel/Netlify) and
+    # calls this API cross-origin. Same-origin deployments leave CORS_ORIGINS
+    # empty and no middleware is installed at all.
+    #
+    # `expose_headers` matters for SSE reconnection: without it the browser
+    # cannot read the Last-Event-ID it needs to resume a dropped stream, and a
+    # reconnect silently replays the run from the beginning.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_settings.allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["Last-Event-ID", "Content-Type"],
+    )
+    log.info("CORS enabled for: %s", _settings.allowed_origins)
 
 app.include_router(router)
 

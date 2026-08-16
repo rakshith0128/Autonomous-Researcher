@@ -55,6 +55,7 @@ REROUTE_EDGES: list[tuple[str, str]] = [
     (CRITIC, DATA),
     (CRITIC, DESIGN),
     (DATA, QUESTION),
+    (DESIGN, QUESTION),
     (EXECUTE, DESIGN),
 ]
 
@@ -94,6 +95,23 @@ def route_after_data(state: ResearchState) -> str:
             return WRITER
         return QUESTION
     return DESIGN
+
+
+def route_after_design(state: ResearchState) -> str:
+    """The Designer found no column that measures what the question asks.
+
+    Substituting an available column would produce a paper whose title
+    contradicts its own research question -- an answer to something nobody
+    asked, which is worse than a null result because it looks like a finding.
+    So the run goes back for a question the data can actually address.
+    """
+    if _halted(state):
+        return WRITER
+    if state.get("reroute_to") == RerouteTarget.QUESTION.value:
+        if state.get("cycle", 0) >= _max_cycles(state):
+            return WRITER
+        return QUESTION
+    return EXECUTE
 
 
 def route_after_execute(state: ResearchState) -> str:
@@ -186,7 +204,9 @@ def build_graph(nodes: dict[str, Any], *, checkpointer: Any = None):
     graph.add_conditional_edges(
         DATA, route_after_data, {QUESTION: QUESTION, DESIGN: DESIGN, WRITER: WRITER}
     )
-    graph.add_edge(DESIGN, EXECUTE)
+    graph.add_conditional_edges(
+        DESIGN, route_after_design, {EXECUTE: EXECUTE, QUESTION: QUESTION, WRITER: WRITER}
+    )
     graph.add_conditional_edges(
         EXECUTE, route_after_execute, {DESIGN: DESIGN, UNCERTAINTY: UNCERTAINTY, WRITER: WRITER}
     )

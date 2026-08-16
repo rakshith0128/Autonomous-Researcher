@@ -150,16 +150,28 @@ class EventBus:
             )
         )
 
-    def reroute(self, target: str, reason: str, cycle: int) -> RunEvent:
-        """The Critic sending work back. Rendered as a red edge in the UI."""
+    def reroute(
+        self,
+        target: str,
+        reason: str,
+        cycle: int,
+        source: AgentName = AgentName.CRITIC,
+    ) -> RunEvent:
+        """Work being sent backwards. Rendered as a red edge in the UI.
+
+        Three agents can trigger this, not just the Critic: the Data Alchemist
+        when it cannot meet the source floor, and the Experiment Designer when
+        no column measures what the question asks. Attributing all of them to
+        the Critic would draw the wrong edge.
+        """
         return self.publish(
             RunEvent(
                 type=EventType.REROUTE,
-                agent=AgentName.CRITIC,
+                agent=source,
                 level=Level.WARN,
                 message=f"Sending work back to {target}: {reason}",
                 cycle=cycle,
-                payload={"target": target, "reason": reason},
+                payload={"target": target, "reason": reason, "source": source.value},
             )
         )
 

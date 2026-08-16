@@ -70,12 +70,28 @@ def test_version_constraints_agree():
     assert not mismatched, f"version constraints differ between manifests: {mismatched}"
 
 
-def test_dockerfile_targets_the_port_hugging_face_expects():
-    """HF Spaces routes to 7860; any other port shows as a permanently
-    building Space with no error message."""
+def test_dockerfile_honours_the_platform_supplied_port():
+    """One image, three hosts.
+
+    Hugging Face requires 7860; Railway and Render inject $PORT and route to
+    whatever it names. Binding to a hard-coded port on those platforms means
+    the health check never passes and the deploy hangs as "building" with no
+    error to read.
+    """
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "EXPOSE 7860" in dockerfile
-    assert "--port" in dockerfile and "7860" in dockerfile.split("CMD")[-1]
+    command = dockerfile.split("CMD")[-1]
+
+    assert "EXPOSE 7860" in dockerfile, "HF Spaces needs 7860 exposed"
+    assert "${PORT" in command, "the port must come from the environment"
+    assert "7860" in command, "and fall back to 7860 when unset"
+
+
+def test_dockerfile_uses_shell_form_so_port_expands():
+    """Regression guard: the exec form does not expand ${PORT}, so uvicorn
+    would try to bind to the literal string."""
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    command = dockerfile.split("CMD")[-1].strip()
+    assert not command.startswith("["), "exec-form CMD cannot expand ${PORT}"
 
 
 def test_dockerfile_runs_as_uid_1000():

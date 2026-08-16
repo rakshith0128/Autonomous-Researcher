@@ -77,6 +77,18 @@ ARXIV_DERIVATIONS: dict[str, list[str]] = {
     "title_length": ["title"],
 }
 
+#: Question-specific columns derived from abstracts. Enough to express a
+#: comparison and a covariate; beyond that the Designer starts fishing.
+MAX_DERIVED_FEATURES = 4
+
+#: Signals that a paper released code. Matched against abstracts, which is
+#: where authors announce it.
+_CODE_HOST_RE = re.compile(
+    r"github\.com|gitlab\.|zenodo\.|huggingface\.co|codeocean|"
+    r"open[- ]sourc|publicly available|code is available|we release",
+    re.IGNORECASE,
+)
+
 #: PDFs actually downloaded and parsed. Each costs megabytes and seconds.
 MAX_PDFS = 4
 #: Papers whose metadata we read. One request, and these become table rows.
@@ -99,6 +111,21 @@ class _MappingBatch(BaseModel):
     mappings: list[_Mapping] = Field(default_factory=list)
 
 
+class _Feature(BaseModel):
+    """A per-paper property to derive from abstract text."""
+
+    column: str = Field(description="snake_case column name, e.g. uses_reinforcement_learning")
+    describes: str = Field(description="what a value of 1 means for a paper")
+    keywords: list[str] = Field(
+        min_length=1,
+        description="Phrases whose presence in an abstract indicates this property",
+    )
+
+
+class _FeatureBatch(BaseModel):
+    features: list[_Feature] = Field(default_factory=list)
+
+
 class DataAlchemist(BaseAgent):
     name = AgentName.ALCHEMIST
     # Not fatal: a shortfall here should re-route to another question, which is
@@ -118,6 +145,27 @@ class DataAlchemist(BaseAgent):
 
         bundle = DataBundle(question_id=question.id)
 
+        # Reuse what a previous visit already fetched.
+        #
+        # The Critic can reroute here several times per run, and re-acquiring
+        # from scratch each time means re-downloading ~30MB of PDFs, re-running
+        # OCR, and re-embedding the same passages. Measured across one run:
+        # three visits spent 128s, 132s and 459s -- 719 seconds of a 900s
+        # budget re-learning what was already in hand, which is why that run
+        # timed out before it could finish a single cycle.
+        #
+        # Documents are keyed by content hash, so this is safe: an identical
+        # fetch would produce an identical document. A changed question still
+        # gets fresh sources on top of the reusable ones.
+        previous: DataBundle | None = state.get("data_bundle")
+        if previous is not None and previous.documents:
+            bundle.documents.extend(previous.documents)
+            self.say(
+                f"Reusing {len(previous.documents)} source(s) already fetched this run; "
+                "only gathering what is missing.",
+                cycle=cycle,
+            )
+
         self.say(f"Acquiring data for: {question.text[:100]}…", cycle=cycle)
 
         # Sources are gathered concurrently: they are different hosts, and the
@@ -135,6 +183,7 @@ class DataAlchemist(BaseAgent):
         repos = repos if isinstance(repos, list) else []
 
         self._promote_tables(bundle, cycle=cycle)
+        _deduplicate(bundle)
 
         modalities = bundle.modalities
         self.say(
@@ -157,6 +206,12 @@ class DataAlchemist(BaseAgent):
                 level=Level.ERROR,
                 cycle=cycle,
             )
+            self.ctx.bus.reroute(
+                target="question",
+                reason=f"insufficient data: {shortfall}",
+                cycle=cycle,
+                source=AgentName.ALCHEMIST,
+            )
             return {
                 "data_bundle": bundle,
                 "reroute_to": "question",
@@ -164,7 +219,21 @@ class DataAlchemist(BaseAgent):
                 "warnings": [f"data acquisition shortfall: {shortfall}"],
             }
 
-        dataset = await self._build_dataset(works, papers, repos, bundle, cycle=cycle)
+        # Index the full texts before anything downstream needs them. Four PDFs
+        # is roughly a quarter of a million characters -- far past any prompt --
+        # so without this the documents are fetched, hashed, cited, and then
+        # never actually read by the agents that reason about them.
+        if self.memory is not None and self.memory.available:
+            chunks = await asyncio.to_thread(self.memory.index_documents, bundle.documents)
+            self.say(
+                f"Indexed {chunks} passages from {len(bundle.documents)} sources for retrieval.",
+                cycle=cycle,
+            )
+            self.tool("vector.index", ok=chunks > 0, detail=f"{chunks} chunks", cycle=cycle)
+
+        dataset = await self._build_dataset(
+            works, papers, repos, bundle, question=question, cycle=cycle
+        )
         bundle.dataset = dataset
         bundle.confidence = self._confidence(bundle, dataset)
 
@@ -227,6 +296,10 @@ class DataAlchemist(BaseAgent):
         self.say(f"OpenAlex: {len(works)} scholarly records.", cycle=cycle)
         return works
 
+    @staticmethod
+    def _already_have(bundle: DataBundle, url: str) -> bool:
+        return any(d.url == url for d in bundle.documents)
+
     async def _arxiv_pdfs(self, term: str, bundle: DataBundle, *, cycle: int) -> list:
         """Full texts, tables, and -- from one paper -- OCR'd figures.
 
@@ -243,6 +316,10 @@ class DataAlchemist(BaseAgent):
             return []
 
         for index, paper in enumerate(papers[:MAX_PDFS]):
+            # Each PDF is megabytes to download and seconds to parse, plus OCR
+            # on the first. Re-fetching one we already hold is pure cost.
+            if self._already_have(bundle, paper.abs_url or paper.pdf_url):
+                continue
             try:
                 data = await client.fetch_pdf(paper)
             except Exception as exc:  # noqa: BLE001 - one dead PDF is not a failure
@@ -370,7 +447,14 @@ class DataAlchemist(BaseAgent):
     # -------------------------------------------------------------- joining
 
     async def _build_dataset(
-        self, works: list, papers: list, repos: list, bundle: DataBundle, *, cycle: int
+        self,
+        works: list,
+        papers: list,
+        repos: list,
+        bundle: DataBundle,
+        *,
+        question: ResearchQuestion,
+        cycle: int,
     ) -> Dataset:
         """Join scholarly records with preprint and repository evidence.
 
@@ -389,7 +473,9 @@ class DataAlchemist(BaseAgent):
                 level=Level.WARN,
                 cycle=cycle,
             )
-            return self._dataset_from_arxiv(papers, repos, bundle)
+            return await self._dataset_from_arxiv(
+                papers, repos, bundle, question=question, cycle=cycle
+            )
 
         report = CleaningReport(rows_in=len(works))
 
@@ -470,6 +556,20 @@ class DataAlchemist(BaseAgent):
         if bundle.conflicts:
             report.notes.append(f"{len(bundle.conflicts)} source conflicts detected")
 
+        # Abstracts, keyed by normalised title so a derived feature lands on the
+        # right row even where the OpenAlex record and the preprint differ.
+        by_title = {_normalise_title(p.title): p.summary for p in papers if p.title}
+        abstracts = [
+            (by_title.get(_normalise_title(str(row.get("title", "")))) or "").lower()
+            for row in rows
+        ]
+        derived = await self._derive_question_features(question, abstracts, rows, cycle=cycle)
+        if derived:
+            report.notes.append(
+                f"derived {len(derived)} question-specific column(s) from abstracts: "
+                f"{', '.join(derived)}"
+            )
+
         mappings = await self._align_schema(rows, cycle=cycle)
         bundle.mappings = mappings
         report.columns_mapped = sum(1 for m in mappings if m.validated)
@@ -493,8 +593,14 @@ class DataAlchemist(BaseAgent):
             cleaning=report,
         )
 
-    def _dataset_from_arxiv(
-        self, papers: list, repos: list, bundle: DataBundle
+    async def _dataset_from_arxiv(
+        self,
+        papers: list,
+        repos: list,
+        bundle: DataBundle,
+        *,
+        question: ResearchQuestion,
+        cycle: int,
     ) -> Dataset:
         """Fallback spine built from preprint metadata.
 
@@ -538,6 +644,17 @@ class DataAlchemist(BaseAgent):
         report.notes.append("built from arXiv metadata; OpenAlex unavailable")
         report.notes.append("no citation data available in this run")
 
+        # Without citations this table is nothing but structural metadata, so
+        # the derived features are the only columns that can address the
+        # question at all. This is the path all three failed runs took.
+        abstracts = [(p.summary or "").lower() for p in papers if p.title][: len(rows)]
+        derived = await self._derive_question_features(question, abstracts, rows, cycle=cycle)
+        if derived:
+            report.notes.append(
+                f"derived {len(derived)} question-specific column(s) from abstracts: "
+                f"{', '.join(derived)}"
+            )
+
         columns = sorted({k for row in rows for k in row})
         data = {col: [row.get(col) for row in rows] for col in columns}
         data, columns, dropped = _drop_constant_columns(data, columns)
@@ -555,6 +672,153 @@ class DataAlchemist(BaseAgent):
             derived_from=ARXIV_DERIVATIONS,
             cleaning=report,
         )
+
+    async def _derive_question_features(
+        self,
+        question: ResearchQuestion,
+        abstracts: list[str],
+        rows: list[dict[str, Any]],
+        *,
+        cycle: int,
+    ) -> list[str]:
+        """Derive the properties the question actually asks about.
+
+        This closes the gap that made three consecutive runs useless. The
+        questions were good -- "do papers proposing RL-based allocation get
+        cited more than heuristic ones?" -- but the assembled table held only
+        structural metadata: author counts, title lengths, category counts.
+        Nothing measured whether a paper *used reinforcement learning*, so the
+        Designer correctly refused, the run looped, and the write-up fell back
+        to whatever trivia happened to run. One paper was titled "The
+        Relationship Between Author Count and Title Length" under a research
+        question about citation counts.
+
+        The abstracts were there the whole time. Every row is built from an
+        arXiv record carrying its full abstract, so the evidence needed to
+        answer these questions was already in memory and simply never read.
+
+        Division of labour follows the rule the rest of the system uses: the
+        model proposes *vocabulary*, which is what it is good at, and Python
+        does the classification, so the resulting column is a deterministic
+        function of the text rather than a model's opinion about each paper.
+        """
+        if not rows or not abstracts:
+            return []
+
+        try:
+            batch = await self.router.structured(
+                Role.FAST,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You turn a research question into measurable properties of a "
+                            "paper that can be detected from its abstract by keyword "
+                            "matching. Keywords must be phrases authors actually write, "
+                            "including common variants and abbreviations."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Research question: {question.text}\n"
+                            f"Quantity to measure: {question.proposal.expected_measurable}\n\n"
+                            "Propose 2-4 properties of an individual paper that this "
+                            "question depends on and that could be spotted in an abstract. "
+                            "For each, give a snake_case column name and the phrases that "
+                            "signal it.\n\n"
+                            "Example for 'do papers with open-source code get cited more':\n"
+                            '  column "releases_code", keywords ["open source", "publicly '
+                            'available", "our code", "github", "we release"]'
+                        ),
+                    },
+                ],
+                _FeatureBatch,
+                temperature=0.2,
+                max_tokens=900,
+            )
+        except Exception as exc:  # noqa: BLE001 - enrichment, never a blocker
+            log.warning("feature derivation failed: %s", exc)
+            return []
+
+        added: list[str] = []
+        for feature in batch.features[:MAX_DERIVED_FEATURES]:
+            column = _safe_column(feature.column)
+            keywords = [k.strip().lower() for k in feature.keywords if k.strip()]
+            if not column or not keywords or column in rows[0]:
+                continue
+
+            # Refuse to re-derive something the metadata already states as
+            # fact. A live run produced `revised_on_arxiv` by scanning
+            # abstracts for the word "revised" -- while a real `revised` column,
+            # taken from arXiv's own version history, sat right beside it. The
+            # derived version is strictly worse: it measures whether authors
+            # happened to use a word, and it looks authoritative.
+            shadowed = next(
+                (existing for existing in rows[0] if _shadows(column, existing)), None
+            )
+            if shadowed:
+                self.say(
+                    f"Skipped derived feature {column!r}: the dataset already carries "
+                    f"{shadowed!r} as recorded metadata, which is more reliable than "
+                    "inferring it from abstract wording.",
+                    level=Level.WARN,
+                    cycle=cycle,
+                )
+                continue
+
+            flags = [
+                1 if any(keyword in text for keyword in keywords) else 0
+                for text in abstracts
+            ]
+
+            # Both groups must be large enough to compare. A column splitting
+            # 3 against 57 passes a bare variance check and then produces a
+            # group comparison on n=3 -- observed live, and worthless: the test
+            # is underpowered to the point of meaninglessness while still
+            # returning a confident-looking p-value.
+            positives = sum(flags)
+            minority = min(positives, len(flags) - positives)
+            if minority < _min_group_size(len(flags)):
+                self.say(
+                    f"Derived feature {column!r} splits {positives}/{len(flags)} papers — "
+                    f"the smaller group has only {minority}, too few to compare. Discarded.",
+                    level=Level.WARN,
+                    cycle=cycle,
+                )
+                continue
+
+            for row, flag in zip(rows, flags, strict=True):
+                row[column] = flag
+            added.append(column)
+            self.say(
+                f"Derived {column!r} from abstracts: {positives}/{len(flags)} papers match "
+                f"({', '.join(keywords[:3])}…)",
+                level=Level.SUCCESS,
+                cycle=cycle,
+            )
+
+        # Always available, and the single most commonly asked-about property.
+        if "mentions_code_release" not in rows[0]:
+            flags = [1 if _CODE_HOST_RE.search(text) else 0 for text in abstracts]
+            if 0 < sum(flags) < len(flags):
+                for row, flag in zip(rows, flags, strict=True):
+                    row["mentions_code_release"] = flag
+                added.append("mentions_code_release")
+                self.say(
+                    f"Derived 'mentions_code_release': {sum(flags)}/{len(flags)} papers "
+                    "reference a code host or release.",
+                    cycle=cycle,
+                )
+
+        if not added:
+            self.say(
+                "No question-specific features could be derived from the abstracts; the "
+                "analysis will be limited to structural metadata.",
+                level=Level.WARN,
+                cycle=cycle,
+            )
+        return added
 
     async def _align_schema(
         self, rows: list[dict[str, Any]], *, cycle: int
@@ -690,6 +954,52 @@ class DataAlchemist(BaseAgent):
 # --- helpers ---------------------------------------------------------------
 
 _TITLE_CLEAN = re.compile(r"[^a-z0-9 ]+")
+_COLUMN_CLEAN = re.compile(r"[^a-z0-9_]+")
+
+
+def _min_group_size(n_rows: int) -> int:
+    """Smallest usable minority group.
+
+    Three observations cannot support a comparison, however tempting the
+    resulting p-value looks. The floor scales with the dataset so a 14-row
+    table is not held to the same bar as a 60-row one.
+    """
+    return max(5, round(n_rows * 0.12))
+
+
+_SHADOW_STOPWORDS = frozenset(
+    {"is", "has", "have", "uses", "using", "mentions", "on", "the", "a", "of", "in", "n", "count"}
+)
+
+
+def _shadows(derived: str, existing: str) -> bool:
+    """Whether a derived column restates an existing metadata column.
+
+    Compared on words rather than exact names, because the model proposes
+    descriptive variants: `revised_on_arxiv` for an existing `revised`,
+    `has_many_authors` for `n_authors`. The rule is that the existing
+    column's meaningful words are all present in the derived name -- so
+    `revised_on_arxiv` shadows `revised`, while `releases_code` does not.
+    """
+
+    def words(name: str) -> set[str]:
+        return {w for w in name.split("_") if w and w not in _SHADOW_STOPWORDS}
+
+    derived_words, existing_words = words(derived), words(existing)
+    if not derived_words or not existing_words:
+        return False
+    return existing_words <= derived_words
+
+
+def _safe_column(name: str) -> str:
+    """Normalise a model-proposed column name.
+
+    Column names reach pandas, the experiment registry and the paper's tables,
+    so a name with spaces or punctuation would fail somewhere downstream with
+    an error that looks nothing like its cause.
+    """
+    cleaned = _COLUMN_CLEAN.sub("_", (name or "").strip().lower()).strip("_")
+    return cleaned[:40] if cleaned and not cleaned[0].isdigit() else ""
 
 
 def _normalise_title(title: str) -> str:
@@ -710,6 +1020,24 @@ def _fuzzy_lookup(key: str, index: dict[str, Any]) -> Any:
         if score > best_score:
             best, best_score = value, score
     return best if best_score >= TITLE_MATCH_THRESHOLD else None
+
+
+def _deduplicate(bundle: DataBundle) -> None:
+    """Collapse documents fetched more than once, keeping the first.
+
+    Reusing a previous visit's documents means a source can be added twice if a
+    fetch path does not check. Duplicates would inflate the source count, skew
+    the confidence score, and produce a reference list that repeats itself.
+    """
+    seen: set[str] = set()
+    unique = []
+    for document in bundle.documents:
+        key = document.provenance.sha256 or document.url
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(document)
+    bundle.documents = unique
 
 
 def _drop_constant_columns(

@@ -36,6 +36,7 @@ from ..config import Settings, get_settings
 from ..graph import build as graph_build
 from ..graph.state import ResearchState, initial_state, summarise
 from ..llm import LLMRouter
+from ..memory.vector import VectorMemory
 from ..schemas import (
     AgentName,
     EventType,
@@ -65,6 +66,7 @@ class ResearchRunner:
             self.run_id, max_cycles=self.settings.max_cycles
         )
         self.manifest = RunManifest(run_id=self.run_id, seed=42)
+        self.memory: VectorMemory | None = None
         self._started = 0.0
 
     async def run(self) -> ResearchState:
@@ -90,12 +92,29 @@ class ResearchRunner:
 
             await router.preflight()
 
+            # Loading the embedding model takes a few seconds, so it happens
+            # off the event loop. Failure is non-fatal: agents fall back to
+            # titles and abstracts, which is thinner evidence but still a run.
+            memory = VectorMemory(self.run_id)
+            if await asyncio.to_thread(memory.initialise):
+                self.bus.message(
+                    AgentName.SUPERVISOR, "Vector memory ready for document retrieval."
+                )
+            else:
+                self.bus.message(
+                    AgentName.SUPERVISOR,
+                    "Vector memory unavailable; agents will work from abstracts only.",
+                    level=Level.WARN,
+                )
+            self.memory = memory
+
             ctx = AgentContext(
                 run_id=self.run_id,
                 settings=self.settings,
                 router=router,
                 fetcher=fetcher,
                 bus=self.bus,
+                memory=memory,
             )
             graph = graph_build.build_graph(_nodes(ctx))
 
@@ -135,6 +154,8 @@ class ResearchRunner:
         finally:
             await fetcher.aclose()
             await router.aclose()
+            if self.memory is not None:
+                self.memory.close()
             self.bus.close()
 
         return self.state

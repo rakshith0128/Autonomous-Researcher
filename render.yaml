@@ -1,0 +1,55 @@
+# Render blueprint for the backend.
+#
+# Only the backend lives here. The frontend is served from a CDN (Vercel or
+# Netlify) so the page loads instantly even while this service is waking from
+# sleep -- free instances spin down after 15 minutes of inactivity and take
+# 30-60 seconds to come back.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> point at this repository.
+
+services:
+  - type: web
+    name: autonomous-research-agent-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /api/health
+
+    envVars:
+      # Free instances are 512MB / 0.1 vCPU, so the two heaviest optional
+      # components are switched off here. Both degrade gracefully in code: the
+      # agents fall back to abstracts instead of retrieved passages, and the
+      # Alchemist skips the OCR-derived image modality while still clearing its
+      # three-modality floor. Local and CLI runs keep both.
+      - key: ENABLE_VECTOR_MEMORY
+        value: "false"
+      - key: ENABLE_OCR
+        value: "false"
+
+      # A 15-minute run on a tenth of a CPU will not finish. Fewer cycles still
+      # exercises the full loop -- discovery, critique, reroute, write-up.
+      - key: MAX_CYCLES
+        value: "3"
+      - key: RUN_TIMEOUT_SECONDS
+        value: "780"
+      - key: MAX_CONCURRENT_RUNS
+        value: "1"
+
+      - key: LOG_LEVEL
+        value: "INFO"
+
+      # Set in the Render dashboard, never in this file.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: CONTACT_EMAIL
+        sync: false
+      # Comma-separated frontend origins, e.g. https://your-app.vercel.app
+      - key: CORS_ORIGINS
+        sync: false

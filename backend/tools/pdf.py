@@ -206,6 +206,14 @@ def _ocr_reader():  # noqa: ANN202 - third-party type
     if _OCR_TRIED:
         return _OCR_SINGLETON
     _OCR_TRIED = True
+
+    from ..config import get_settings
+
+    if not get_settings().enable_ocr:
+        log.info("OCR disabled by configuration; skipping the image modality")
+        _OCR_SINGLETON = None
+        return None
+
     try:
         from rapidocr_onnxruntime import RapidOCR
 

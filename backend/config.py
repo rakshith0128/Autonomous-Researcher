@@ -180,6 +180,20 @@ class Settings(BaseSettings):
     per_ip_cooldown_seconds: int = 120
     max_runs_per_day: int = 50
 
+    # --- optional components ---
+    #: Both of these are genuinely optional and degrade gracefully, which makes
+    #: them the right things to shed on constrained hardware. A free-tier
+    #: instance is typically 512MB and a tenth of a CPU; embedding costs ~70ms
+    #: per chunk and OCR ~10s per figure on a full core, so on a tenth of one
+    #: they alone would exceed the run's entire time budget.
+    #:
+    #: Disabled, the agents fall back to abstracts rather than retrieved
+    #: passages, and the Alchemist skips the image modality while still meeting
+    #: its three-modality floor. The run is thinner, not broken -- and the paper
+    #: says so.
+    enable_vector_memory: bool = True
+    enable_ocr: bool = True
+
     # --- tool behaviour ---
     http_timeout_seconds: float = 30.0
     max_fetch_bytes: int = 12_000_000
@@ -194,6 +208,22 @@ class Settings(BaseSettings):
     # --- storage ---
     data_dir: Path = Field(default=Path("./data"))
     log_level: str = "INFO"
+
+    # --- split deployment ---
+    #: Origins permitted to call this API from a browser.
+    #:
+    #: Empty means same-origin only, which is correct when one container serves
+    #: both the API and the built frontend. Set this when the frontend is hosted
+    #: separately -- a CDN-hosted page loads instantly even while the backend is
+    #: still waking from sleep, which on a free tier that sleeps after 15
+    #: minutes is the difference between a dead URL and a working one.
+    #:
+    #: Comma-separated, e.g. "https://my-app.vercel.app,http://localhost:5173".
+    cors_origins: str = ""
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def db_path(self) -> Path:

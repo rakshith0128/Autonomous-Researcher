@@ -62,9 +62,17 @@ from fastembed import TextEmbedding; \
 TextEmbedding(model_name='BAAI/bge-small-en-v1.5'); \
 print('embedding model cached')" || echo "WARN: embedding model not pre-cached; will download on first use"
 
+# 7860 is the default because Hugging Face Spaces requires it. Railway and
+# Render instead inject $PORT and route to whatever it names, so the port is
+# read from the environment with 7860 as the fallback -- one image, three hosts.
+ENV PORT=7860
 EXPOSE 7860
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS http://localhost:7860/api/health || exit 1
+# Shell form deliberately: the exec form does not expand ${PORT}, so an exec-form
+# CMD would have the server listen on the literal string and the platform's
+# health check would never pass.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://localhost:${PORT:-7860}/api/health" || exit 1
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "7860", "--timeout-keep-alive", "120"]
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860} --timeout-keep-alive 120
+

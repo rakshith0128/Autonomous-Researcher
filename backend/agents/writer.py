@@ -116,6 +116,10 @@ system declined to assert these:
 The reviewer's objections:
 {objections}
 
+Passages retrieved from the papers this run actually downloaded. Ground your introduction and \
+discussion in THESE, not in recollection. Each carries the source it came from:
+{evidence}
+
 Reference list (cite by number ONLY):
 {references}
 
@@ -240,6 +244,10 @@ class PaperWriter(BaseAgent):
             claims="\n".join(f"- {c.text}" for c in claims) or "- none",
             abstained="\n".join(f"- {c.text}" for c in abstained) or "- none",
             objections="\n".join(objections) or "- none recorded",
+            evidence=self.recall(
+                f"{question.text} {state.get('domain_name', '')}", k=5, max_chars=4500
+            )
+            or "(no indexed passages available; write from the results alone)",
             references=format_reference_list(references),
         )
 

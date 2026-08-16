@@ -59,6 +59,22 @@ class ExperimentSpec(BaseModel):
     rationale: str = ""
     code: str = Field("", description="Only populated for CUSTOM_CODE")
 
+    answers_question: bool = Field(
+        True,
+        description=(
+            "False if no available column measures what the research question asks "
+            "about. Set this honestly -- answering a different question is worse "
+            "than reporting that this one cannot be answered."
+        ),
+    )
+    addresses_question: str = Field(
+        "",
+        description=(
+            "Which specific column corresponds to which part of the research "
+            "question. Naming them makes substitution visible."
+        ),
+    )
+
     def required_columns(self) -> list[str]:
         """Columns this spec needs, so we can validate before executing."""
         keys = ("x", "y", "group", "value", "time", "outcome", "target")
