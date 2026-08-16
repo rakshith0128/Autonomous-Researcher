@@ -1,14 +1,3 @@
----
-title: Autonomous Research Agent
-emoji: 🔬
-colorFrom: indigo
-colorTo: blue
-sdk: docker
-app_port: 7860
-pinned: false
-short_description: Nine agents discover emerging science and write their own paper
----
-
 # Autonomous Research Agent
 
 A multi-agent system that, from a single button press and no other input, discovers an
@@ -19,7 +8,7 @@ mini research paper with interactive figures and per-claim confidence scores.
 
 It runs entirely on free-tier infrastructure. A complete run costs **$0.00**.
 
-**▶ Live demo: https://autonomous-researcher-production-e552.up.railway.app**
+**▶ Live demo: autonomous-researcher-production-6d38.up.railway.app**
 
 Press *Start Research*. Nothing to type, no sign-in. If the day's free-tier quota is spent,
 browse *Runs* — completed papers stay readable.
