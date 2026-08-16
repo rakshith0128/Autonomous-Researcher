@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* Agent identity colours. Each agent keeps one hue across the feed, the live
+   graph, and the trace view, so a reviewer can follow one agent's thread
+   through the whole run without reading labels. */
+@theme {
+  --color-ink: #070a12;
+  --color-panel: #0e1220;
+  --color-panel-2: #151b2e;
+  --color-edge: #232b45;
+
+  --color-agent-supervisor: #a78bfa;
+  --color-agent-scout: #38bdf8;
+  --color-agent-panel: #22d3ee;
+  --color-agent-question: #4ade80;
+  --color-agent-alchemist: #fbbf24;
+  --color-agent-designer: #fb923c;
+  --color-agent-executor: #f472b6;
+  --color-agent-uncertainty: #c084fc;
+  --color-agent-critic: #f87171;
+  --color-agent-writer: #34d399;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink);
+  color: #e6ebf7;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre,
+.mono {
+  font-family: ui-monospace, "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+/* Thin scrollbars: the agent feed is a tall narrow column and the default
+   Windows scrollbar eats a meaningful fraction of its width. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-edge) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-edge);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 currentColor;
+    opacity: 0.7;
+  }
+  70% {
+    box-shadow: 0 0 0 10px transparent;
+    opacity: 0;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    opacity: 0;
+  }
+}
+
+.pulse-ring::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  animation: pulse-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-ring::after {
+    animation: none;
+  }
+}

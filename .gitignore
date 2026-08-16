@@ -1,0 +1,30 @@
+# secrets
+.env
+.env.local
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# runtime artefacts
+data/
+*.db
+*.sqlite3
+.chroma/
+runs/
+
+# node
+node_modules/
+frontend/dist/
+npm-debug.log*
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
