@@ -19,7 +19,17 @@ mini research paper with interactive figures and per-claim confidence scores.
 
 It runs entirely on free-tier infrastructure. A complete run costs **$0.00**.
 
-**Live demo:** press *Start Research*. Nothing to type, no sign-in.
+**▶ Live demo: https://autonomous-researcher-production-e552.up.railway.app**
+
+Press *Start Research*. Nothing to type, no sign-in. If the day's free-tier quota is spent,
+browse *Runs* — completed papers stay readable.
+
+| | |
+|---|---|
+| **Scale** | 15,700 lines of Python · 1,950 of TypeScript · 280 tests |
+| **Agents** | 9, in a LangGraph state machine with 6 reroute paths |
+| **Data** | 5 source modalities, every source SHA-256 hashed |
+| **Cost** | $0.00 — Groq and Gemini free tiers, no card |
 
 ---
 
@@ -68,6 +78,42 @@ graph TD
 
 Solid edges are forward flow. Dashed edges are work being sent backwards — the behaviour that
 makes this a graph rather than a pipeline.
+
+### How data moves
+
+```mermaid
+flowchart LR
+    subgraph acquire["Acquisition"]
+        AX[arXiv API]
+        OA[OpenAlex]
+        GH[GitHub]
+        TV[Tavily]
+    end
+    subgraph process["Processing"]
+        PDF[PyMuPDF text]
+        TBL[pdfplumber tables]
+        OCR[RapidOCR figures]
+        VEC[(Chroma<br/>vector memory)]
+    end
+    subgraph analyse["Analysis"]
+        DS[joined dataset<br/>+ derived features]
+        REG[experiment registry<br/>scipy / statsmodels]
+        UQ[confidence scoring]
+    end
+    AX --> PDF --> TBL
+    PDF --> OCR
+    PDF --> VEC
+    AX --> DS
+    OA --> DS
+    GH --> DS
+    TV --> DS
+    DS --> REG --> UQ --> PAPER[paper.md<br/>+ manifest.json]
+    VEC -.retrieval.-> REG
+    VEC -.retrieval.-> PAPER
+```
+
+Every fetched artefact is content-hashed on arrival, so a reference in the finished paper can
+be re-fetched and re-verified.
 
 ### The agents
 
