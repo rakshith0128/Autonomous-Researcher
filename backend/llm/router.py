@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -47,6 +48,11 @@ T = TypeVar("T", bound=BaseModel)
 
 Messages = list[dict[str, str]]
 EventSink = Callable[[RunEvent], None]
+
+#: A 429 asking us to wait less than this is treated as backpressure to sit out
+#: rather than a failure to route around. Per-minute token ceilings clear in
+#: seconds; benching the model instead throws away a healthy provider.
+SHORT_RETRY_CEILING_SECONDS = 8.0
 
 # Cheaper tier to fall back to when a role's providers are all exhausted.
 _DEGRADE_TO: dict[Role, Role | None] = {
@@ -343,6 +349,37 @@ class LLMRouter:
                     )
                 except (TimeoutError, RateLimitError, APIStatusError, APIError) as exc:
                     last_error = exc
+
+                    # Brief, self-resolving backpressure: the provider told us
+                    # precisely how long to wait and it is short. Sleeping and
+                    # retrying the same model is strictly better than benching
+                    # it and walking the failover chain -- the model is not
+                    # unhealthy, we simply arrived a fraction of a second early.
+                    hint = retry_after_seconds(exc)
+                    if hint is not None and hint <= SHORT_RETRY_CEILING_SECONDS:
+                        log.info(
+                            "%s/%s asked for %.2fs; waiting rather than failing over",
+                            state.spec.name,
+                            model,
+                            hint,
+                        )
+                        await asyncio.sleep(hint + 0.25)
+                        try:
+                            return await self._call(
+                                state,
+                                model,
+                                role,
+                                messages,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                response_format=response_format,
+                                degraded=degraded,
+                                attempts=attempts,
+                            )
+                        except (TimeoutError, RateLimitError, APIStatusError, APIError) as retry_exc:
+                            last_error = retry_exc
+                            exc = retry_exc
+
                     self._handle_failure(state, model, exc)
                     continue
 
@@ -476,12 +513,26 @@ class LLMRouter:
             # whole provider would discard its other models, which on a
             # provider whose quotas differ 25x between models is exactly the
             # wrong response -- the lite sibling is very likely still available.
-            #
-            # Daily exhaustion deserves a long bench: retrying a model that
-            # says "resets at midnight" every minute wastes the retry budget.
-            daily = "perday" in str(exc).lower().replace("_", "").replace(" ", "")
-            self.budget.penalise(name, model, seconds=1800.0 if daily else 60.0)
-            reason = "daily quota exhausted" if daily else "rate limited"
+            message = str(exc).lower()
+            daily = "perday" in message.replace("_", "").replace(" ", "")
+
+            if daily:
+                # "Resets at midnight UTC" -- retrying every minute is pure
+                # waste, so bench it properly.
+                cooldown = 1800.0
+                reason = "daily quota exhausted"
+            else:
+                # Prefer the provider's own figure over a guess. A per-minute
+                # token ceiling clears in well under a minute, and a flat 60s
+                # bench discards a model that is about to be usable again.
+                hint = retry_after_seconds(exc)
+                cooldown = min(hint + 0.5, 60.0) if hint is not None else 20.0
+                reason = (
+                    f"rate limited, retry in {hint:.2f}s"
+                    if hint is not None
+                    else "rate limited"
+                )
+            self.budget.penalise(name, model, seconds=cooldown)
         elif status == 404:
             # The model is gone. Remember that so we stop asking for it.
             state.unavailable_models.add(model)
@@ -657,6 +708,37 @@ class LLMRouter:
 
 def _max_overhead(states: list[_ProviderState]) -> int:
     return max((s.spec.thinking_token_overhead for s in states), default=0)
+
+
+_RETRY_HINT_RE = re.compile(r"try again in\s*([\d.]+)\s*(ms|s|m)\b", re.IGNORECASE)
+
+
+def retry_after_seconds(exc: Exception) -> float | None:
+    """How long the provider actually asked us to wait, if it said.
+
+    Rate-limit responses usually carry the answer, either in a `retry-after`
+    header or in the message itself -- Groq writes "Please try again in 340ms".
+    Ignoring that and applying a flat cooldown is what turned a *third of a
+    second* of backpressure into a benched model, an exhausted failover chain,
+    and a run that ended with "every configured provider is rate-limited".
+
+    Returns None when no hint is present, in which case the caller falls back
+    to its own policy.
+    """
+    response = getattr(exc, "response", None)
+    header = getattr(response, "headers", {}) or {}
+    raw = header.get("retry-after") or header.get("Retry-After")
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+
+    match = _RETRY_HINT_RE.search(str(exc))
+    if not match:
+        return None
+    value, unit = float(match.group(1)), match.group(2).lower()
+    return value / 1000.0 if unit == "ms" else value * 60.0 if unit == "m" else value
 
 
 def _is_response_format_rejection(exc: APIStatusError) -> bool:

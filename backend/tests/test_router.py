@@ -6,9 +6,15 @@ documentation. Each test corresponds to a way a run died.
 
 from __future__ import annotations
 
+import pytest
+
 from backend.config import PROVIDER_REGISTRY, Role, Settings
 from backend.llm.budget import MODEL_LIMITS, PROVIDER_LIMITS, BudgetManager
-from backend.llm.router import LLMRouter
+from backend.llm.router import (
+    SHORT_RETRY_CEILING_SECONDS,
+    LLMRouter,
+    retry_after_seconds,
+)
 
 
 def settings_with(**keys: str) -> Settings:
@@ -37,6 +43,75 @@ class TestQuotaCalibration:
     def test_every_registry_provider_has_limits(self):
         for spec in PROVIDER_REGISTRY:
             assert spec.name in PROVIDER_LIMITS
+
+
+class TestRetryHints:
+    """Providers state how long to wait. Ignoring it cost a live run.
+
+    The observed 429 read:
+
+        Rate limit reached for model `llama-3.1-8b-instant` ... on tokens per
+        minute (TPM): Limit 6000, Used 4076, Requested 1958. Please try again
+        in 340ms.
+
+    A 340-millisecond wait was treated as a failed provider, the failover chain
+    was walked and exhausted, and the run ended with "every configured provider
+    is rate-limited" — over a third of a second of backpressure.
+    """
+
+    def test_parses_the_millisecond_hint_groq_actually_sends(self):
+        exc = Exception(
+            "Error code: 429 - Rate limit reached for model `llama-3.1-8b-instant` "
+            "on tokens per minute (TPM): Limit 6000, Used 4076, Requested 1958. "
+            "Please try again in 340ms."
+        )
+        assert retry_after_seconds(exc) == pytest.approx(0.34)
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("please try again in 2s", 2.0),
+            ("Please try again in 1.5s", 1.5),
+            ("try again in 500ms", 0.5),
+            ("try again in 2m", 120.0),
+        ],
+    )
+    def test_parses_each_unit(self, message: str, expected: float):
+        assert retry_after_seconds(Exception(message)) == pytest.approx(expected)
+
+    def test_prefers_the_retry_after_header(self):
+        class _Response:
+            headers = {"retry-after": "7"}
+
+        exc = Exception("try again in 999s")
+        exc.response = _Response()
+        assert retry_after_seconds(exc) == 7.0
+
+    def test_returns_none_when_no_hint_is_given(self):
+        assert retry_after_seconds(Exception("Internal server error")) is None
+
+    def test_short_hints_stay_under_the_wait_ceiling(self):
+        """Below the ceiling the router waits; above it, it fails over."""
+        assert 0.34 < SHORT_RETRY_CEILING_SECONDS
+        assert 120.0 > SHORT_RETRY_CEILING_SECONDS
+
+
+class TestMeasuredTokenCeilings:
+    def test_groq_tpm_matches_the_limit_the_provider_reports(self):
+        """The 429 stated "Limit 6000". A configured 14,000 meant the budget
+        manager approved calls the provider then rejected — the precise failure
+        this module exists to prevent."""
+        for model in (
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile",
+            "openai/gpt-oss-120b",
+        ):
+            assert MODEL_LIMITS[model].tpm < 6000, f"{model} exceeds the measured ceiling"
+
+    def test_ceiling_still_admits_a_realistic_prompt(self):
+        """Too conservative is its own failure: a Critic prompt runs to roughly
+        2,000 tokens and must fit."""
+        assert MODEL_LIMITS["llama-3.1-8b-instant"].tpm >= 4_000
 
 
 class TestGracefulDegradation:

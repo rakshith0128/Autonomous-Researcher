@@ -61,12 +61,21 @@ MODEL_LIMITS: dict[str, RateLimits] = {
     "gemini-3.5-flash": RateLimits(rpm=8, tpm=200_000, rpd=18, tpd=2_000_000),
     "gemini-3.5-flash-lite": RateLimits(rpm=13, tpm=200_000, rpd=450, tpd=2_000_000),
     "gemini-3.1-flash-lite": RateLimits(rpm=13, tpm=200_000, rpd=450, tpd=2_000_000),
-    # --- Groq: generous daily counts, but the per-minute token ceiling binds ---
-    # The 8b model carries the highest request volume and has the loosest
-    # daily allowance, so it gets the widest per-minute window.
-    "llama-3.1-8b-instant": RateLimits(rpm=27, tpm=14_000, rpd=13_000, tpd=400_000),
-    "llama-3.3-70b-versatile": RateLimits(rpm=27, tpm=11_000, rpd=900, tpd=180_000),
-    "openai/gpt-oss-120b": RateLimits(rpm=27, tpm=11_000, rpd=900, tpd=180_000),
+    # --- Groq: the per-minute TOKEN ceiling is what actually binds ---
+    #
+    # Measured from the provider's own 429, which states the limit outright:
+    #
+    #   Rate limit reached for model `llama-3.1-8b-instant` ... on tokens per
+    #   minute (TPM): Limit 6000, Used 4076, Requested 1958
+    #
+    # An earlier value of 14,000 here was more than double the truth, so the
+    # budget manager believed a call fitted, admitted it, and collected a 429 --
+    # the exact failure this module exists to prevent. Set to 5,200 for
+    # headroom: one large Critic prompt is ~2,000 tokens, so two fit inside a
+    # minute and the third waits rather than being rejected.
+    "llama-3.1-8b-instant": RateLimits(rpm=27, tpm=5_200, rpd=13_000, tpd=400_000),
+    "llama-3.3-70b-versatile": RateLimits(rpm=27, tpm=5_200, rpd=900, tpd=180_000),
+    "openai/gpt-oss-120b": RateLimits(rpm=27, tpm=5_200, rpd=900, tpd=180_000),
 }
 
 _FALLBACK_LIMITS = RateLimits(rpm=10, tpm=10_000, rpd=200, tpd=100_000)
