@@ -81,34 +81,23 @@ class _SameQuestion(BaseModel):
 
 SYSTEM = """You design research questions for an autonomous analysis system.
 
-A good question here has four properties:
-1. It CANNOT be answered by finding one paper or one webpage. If a search would surface the \
-answer directly, it is worthless.
-2. Answering it requires JOINING at least two different data sources.
-3. It names a concrete quantity that can be MEASURED from what this system can actually \
-gather. That is a real constraint, not a formality -- see the list below.
-4. It is answerable with a statistical test on data gathered in minutes, not a lab experiment.
+Requirements:
+1. A search must NOT answer it directly. If it would, it is worthless.
+2. It requires JOINING at least two data sources.
+3. It names a quantity measurable from the list below.
+4. A statistical test can settle it in minutes.
 
-WHAT CAN ACTUALLY BE MEASURED, per paper:
-- Structural metadata: publication date, author count, arXiv category count, title length, \
-abstract length, whether the preprint was revised.
-- Citation counts and citations-per-year -- available only when OpenAlex responds, so do not \
-build a question that collapses entirely without them.
-- PROPERTIES DETECTABLE IN THE ABSTRACT: whether a paper uses a named method, proposes a \
-particular approach, reports releasing code, targets a specific application. These become \
-columns automatically, so questions comparing *kinds of paper* are strongly preferred -- \
-"do papers doing X differ from papers doing Y" is answerable; the system will build the \
-X and Y columns from the abstracts.
+Measurable per paper:
+- Metadata: date, author count, category count, title length, abstract length, revised.
+- Citations and citations/year (when OpenAlex responds -- do not depend on these alone).
+- Abstract-detectable properties: uses a named method, proposes an approach, releases code, \
+targets an application. These become columns automatically.
 
-Do NOT ask about anything requiring: reading full experimental results tables across many \
-papers, benchmark leaderboards, hardware specifications, funding, author affiliations, or \
-any quantity that appears in only a handful of papers.
+Best shape: "do papers doing X differ from papers doing Y" -- the system builds X and Y from \
+the abstracts.
 
-Avoid questions that are really opinions ("is X promising?"), predictions about the future, \
-or that need proprietary data.
-
-Prefer questions of the form: does measurable property A relate to measurable property B \
-across this domain's literature?"""
+Not measurable: results tables across papers, leaderboards, hardware, funding, affiliations, \
+opinions, predictions."""
 
 PROMPT = """Domain: {domain}
 {description}
@@ -248,7 +237,10 @@ class QuestionGenerator(BaseAgent):
         self.tool("arxiv.search", ok=bool(papers), detail=f"{len(papers)} papers for {term!r}")
         if not papers:
             return "- (no recent papers retrieved; generate from the measured evidence alone)"
-        return "\n".join(f"- {p.title}: {p.summary[:220]}" for p in papers[:8])
+        # Five titles with short snippets, not eight with long ones. These exist
+        # to show what the field is *about*; a 6,000 token-per-minute budget
+        # makes every extra abstract compete with the task itself.
+        return "\n".join(f"- {p.title}: {p.summary[:140]}" for p in papers[:5])
 
     async def _generate(
         self, chosen, papers: str, *, avoid: list[str], n: int

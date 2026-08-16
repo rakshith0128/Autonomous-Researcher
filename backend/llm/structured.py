@@ -162,17 +162,44 @@ def _format_validation_error(exc: ValidationError) -> str:
     return "\n".join(lines)
 
 
+def _compact_schema(node: Any) -> Any:
+    """Strip everything a model does not need to produce valid output.
+
+    The generated JSON Schema carries `title` on every field and `description`
+    on many, which together are most of its size. The field *descriptions* do
+    real work -- they tell the model what a field means -- so those stay; the
+    auto-generated titles, which merely restate the field name in title case,
+    do not.
+
+    This matters more than it sounds: on a 6,000 tokens-per-minute budget the
+    schema is sent on every structured call, and `Critique` alone was over
+    1,100 tokens before trimming.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _compact_schema(value)
+            for key, value in node.items()
+            if key not in {"title", "additionalProperties"}
+        }
+    if isinstance(node, list):
+        return [_compact_schema(item) for item in node]
+    return node
+
+
 def schema_instructions(schema: type[BaseModel]) -> str:
     """The system-prompt fragment describing the required output shape.
 
     Sends the real JSON Schema rather than a hand-written description so the
-    two can never drift apart as the models evolve.
+    two can never drift apart as the models evolve -- but compacted, and
+    without indentation, because every token here competes with the actual
+    task for a per-minute budget.
     """
+    compact = _compact_schema(schema.model_json_schema())
     return (
         "Respond with a single JSON object and nothing else. No prose, no "
         "markdown fences, no explanation before or after.\n\n"
         "It must validate against this JSON Schema:\n"
-        f"{json.dumps(schema.model_json_schema(), indent=2)}"
+        f"{json.dumps(compact, separators=(',', ':'))}"
     )
 
 
@@ -188,18 +215,27 @@ def repair_messages(
     the error makes models "fix" the JSON by inventing new content that no
     longer answers the question.
     """
-    truncated = raw_output[:4000]
+    # The schema is deliberately NOT repeated here. It is already in the system
+    # turn of `original`, and re-sending it doubled the prompt at exactly the
+    # moment the budget was tightest: a repair round was measured at 2,766
+    # tokens against a 6,000/minute ceiling, and the duplicate schema plus a
+    # 4,000-character echo was most of the difference.
+    #
+    # The echo is trimmed hard for the same reason. A model needs enough of its
+    # own output to see the mistake, not all of it.
+    truncated = raw_output[:1200]
+    if len(raw_output) > 1200:
+        truncated += "\n…[truncated]"
+
     return [
         *original,
         {"role": "assistant", "content": truncated},
         {
             "role": "user",
             "content": (
-                "That output could not be parsed into the required schema.\n\n"
+                "That output did not satisfy the schema given above.\n\n"
                 f"Errors:\n{error}\n\n"
-                "Return the SAME content, corrected to satisfy the schema. "
-                "Output only the JSON object -- no fences, no commentary.\n\n"
-                f"{schema_instructions(schema)}"
+                "Return the SAME content, corrected. Output only the JSON object."
             ),
         },
     ]
