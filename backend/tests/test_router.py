@@ -98,20 +98,27 @@ class TestRetryHints:
 
 class TestMeasuredTokenCeilings:
     def test_groq_tpm_matches_the_limit_the_provider_reports(self):
-        """The 429 stated "Limit 6000". A configured 14,000 meant the budget
-        manager approved calls the provider then rejected — the precise failure
-        this module exists to prevent."""
+        """Groq reports x-ratelimit-limit-tokens: 8000. A configured 14,000
+        meant the budget manager approved calls the provider then rejected —
+        the precise failure this module exists to prevent."""
         for model in (
-            "llama-3.1-8b-instant",
-            "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "qwen/qwen3.6-27b",
         ):
-            assert MODEL_LIMITS[model].tpm < 6000, f"{model} exceeds the measured ceiling"
+            assert MODEL_LIMITS[model].tpm < 8000, f"{model} exceeds the measured ceiling"
 
     def test_ceiling_still_admits_a_realistic_prompt(self):
         """Too conservative is its own failure: a Critic prompt runs to roughly
         2,000 tokens and must fit."""
-        assert MODEL_LIMITS["llama-3.1-8b-instant"].tpm >= 4_000
+        assert MODEL_LIMITS["openai/gpt-oss-20b"].tpm >= 4_000
+
+    def test_every_configured_groq_model_has_measured_limits(self):
+        """A model with no entry silently inherits the provider default, which
+        is the 14,000 that caused the original overspend."""
+        groq = next(p for p in PROVIDER_REGISTRY if p.name == "groq")
+        for model in groq.models.values():
+            assert model in MODEL_LIMITS, f"{model} has no measured limits"
 
 
 class TestGracefulDegradation:
@@ -168,7 +175,15 @@ class TestProviderConfiguration:
         assert gemini.thinking_token_overhead > 0
 
     def test_groq_reasoning_model_supports_structured_output(self):
-        """llama-3.3-70b does not accept response_format on Groq; the reasoning
-        slot must be a model that does, since nearly every call is schema-bound."""
+        """The reasoning slot must be a model that accepts response_format,
+        since nearly every call is schema-bound. gpt-oss-120b is the one in
+        Groq's current catalogue that does."""
         groq = next(p for p in PROVIDER_REGISTRY if p.name == "groq")
-        assert groq.models[Role.REASONING] != "llama-3.3-70b-versatile"
+        assert groq.models[Role.REASONING] == "openai/gpt-oss-120b"
+
+    def test_groq_roles_use_distinct_models(self):
+        """Quotas are per model, so sharing one across roles collapses three
+        rate-limit windows into one — the failure that left gemini-3.5-flash-lite
+        serving 497 of its 500 daily requests."""
+        groq = next(p for p in PROVIDER_REGISTRY if p.name == "groq")
+        assert len(set(groq.models.values())) == len(groq.models)

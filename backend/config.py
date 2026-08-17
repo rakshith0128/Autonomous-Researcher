@@ -86,12 +86,18 @@ PROVIDER_REGISTRY: list[ProviderSpec] = [
             # schema-constrained, so native enforcement is worth more than raw
             # parameter count.
             Role.REASONING: "openai/gpt-oss-120b",
-            Role.FAST: "llama-3.1-8b-instant",
-            # llama-3.3-70b for synthesis: 1000 requests/day and better prose
-            # than the 8b. It does *not* accept response_format, but the paper
-            # writer is the one place where that costs nothing -- the router
-            # drops the constraint and the Pydantic repair loop covers it.
-            Role.SYNTHESIS: "llama-3.3-70b-versatile",
+            Role.FAST: "openai/gpt-oss-20b",
+            # qwen3.6-27b for synthesis: a third distinct rate-limit window, and
+            # mid-size prose beats the 20b's. If it declines response_format the
+            # router drops the constraint and the Pydantic repair loop covers it,
+            # which for the paper writer costs nothing.
+            #
+            # These replaced llama-3.1-8b-instant and llama-3.3-70b-versatile,
+            # which Groq removed from its catalogue on 2026-08-17. Both then
+            # 404'd at preflight, leaving gpt-oss-120b as the only Groq model
+            # alive -- so the FAST and SYNTHESIS roles had no Groq option at all
+            # and every call in them fell to Gemini, burning its daily quota.
+            Role.SYNTHESIS: "qwen/qwen3.6-27b",
         },
         supports_json_schema=True,
     ),

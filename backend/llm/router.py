@@ -92,16 +92,6 @@ class _ProviderState:
     preflight_ok: bool = False
     consecutive_failures: int = 0
 
-    def model_for(self, role: Role) -> str | None:
-        model = self.spec.models.get(role)
-        if model and model not in self.unavailable_models:
-            return model
-        # Any surviving model for another role beats no model at all.
-        for candidate in self.spec.models.values():
-            if candidate not in self.unavailable_models:
-                return candidate
-        return None
-
 
 class LLMRouter:
     """The only thing in this codebase that talks to an LLM."""
@@ -266,15 +256,28 @@ class LLMRouter:
                 if model and model not in state.unavailable_models:
                     out.append((state, model, fallback_role))
 
-        # Last resort: any live model anywhere.
+        # Last resort: any live model anywhere, including a provider's *other*
+        # models. Without this, a role whose own model is spent has nowhere left
+        # to go even when a sibling on the same key has quota to spare. Observed
+        # live: gemini-3.5-flash-lite absorbed 497 of its 500 daily requests --
+        # serving both the FAST role and every degraded REASONING call -- while
+        # gemini-3.1-flash-lite sat at 79 and was never a candidate for either.
         for state in self._states:
-            model = state.model_for(role)
-            if model and not any(model == m and state is s for s, m, _ in out):
-                out.append((state, model, role))
+            for model in dict.fromkeys(state.spec.models.values()):
+                if model in state.unavailable_models:
+                    continue
+                if any(model == m and state is s for s, m, _ in out):
+                    continue
+                # Report the role the model is configured for, so a substitute
+                # is correctly flagged as degraded and sorts behind the real one.
+                served = next(
+                    (r for r, m in state.spec.models.items() if m == model), role
+                )
+                out.append((state, model, served))
         return out
 
     def _ordered_candidates(
-        self, role: Role, estimated_tokens: int
+        self, role: Role, base_tokens: int
     ) -> list[tuple[_ProviderState, str, Role]]:
         """Affordable candidates, most free capacity first.
 
@@ -293,7 +296,18 @@ class LLMRouter:
             (state, model, served)
             for state, model, served in candidates
             if not self.budget.is_blocked(state.spec.name, model)
-            and self.budget.can_afford(state.spec.name, model, estimated_tokens)
+            # Thinking headroom is a property of the provider being called, so
+            # it is added per candidate. Budgeting every provider against the
+            # *largest* overhead any configured provider needs charged Gemini's
+            # 2,500-token reserve to Groq as well, pushing a routine 2,200-token
+            # call past Groq's 5,200 per-minute ceiling. Groq was then dropped
+            # from the writer, critic, question, scout and panel call sites on a
+            # completely fresh budget, and the whole run landed on Gemini.
+            and self.budget.can_afford(
+                state.spec.name,
+                model,
+                base_tokens + state.spec.thinking_token_overhead,
+            )
         ]
 
         preference = {id(state): i for i, (state, _, _) in enumerate(candidates)}
@@ -323,16 +337,15 @@ class LLMRouter:
                 "(see .env.example)."
             )
 
-        # Budget against the largest ceiling any candidate might use, so a
-        # provider needing thinking headroom is not admitted on an estimate
-        # that ignores it.
-        estimated = estimate_messages(messages) + max_tokens + _max_overhead(self._states)
+        # Provider-agnostic size of this call. Each candidate adds its own
+        # thinking headroom on top; see _ordered_candidates.
+        base_tokens = estimate_messages(messages) + max_tokens
         attempts = 0
         last_error: Exception | None = None
         waited = False
 
         while True:
-            for state, model, served_role in self._ordered_candidates(role, estimated):
+            for state, model, served_role in self._ordered_candidates(role, base_tokens):
                 attempts += 1
                 degraded = served_role is not role
                 try:
@@ -704,10 +717,6 @@ class LLMRouter:
         await asyncio.gather(
             *(s.client.close() for s in self._states), return_exceptions=True
         )
-
-
-def _max_overhead(states: list[_ProviderState]) -> int:
-    return max((s.spec.thinking_token_overhead for s in states), default=0)
 
 
 _RETRY_HINT_RE = re.compile(r"try again in\s*([\d.]+)\s*(ms|s|m)\b", re.IGNORECASE)
