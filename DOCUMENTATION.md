@@ -3,7 +3,7 @@
 Complete technical documentation for the Autonomous Research Agent: what every module does,
 why it is built that way, the failures that shaped it, and how to verify any of it yourself.
 
-**Live system:** https://autonomous-researcher-production-e552.up.railway.app
+**Live system:** [https://autonomous-researcher-production-e552.up.railway.app](https://autonomous-researcher-production-6d38.up.railway.app)
 
 ---
 
