@@ -8,7 +8,7 @@ mini research paper with interactive figures and per-claim confidence scores.
 
 It runs entirely on free-tier infrastructure. A complete run costs **$0.00**.
 
-**▶ Live demo: autonomous-researcher-production-6d38.up.railway.app**
+**▶ Live Demo:** https://autonomous-researcher-production-6d38.up.railway.app
 
 Press *Start Research*. Nothing to type, no sign-in. If the day's free-tier quota is spent,
 browse *Runs* — completed papers stay readable.
